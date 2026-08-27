@@ -1,0 +1,38 @@
+{
+  "name": "crm-conversacional",
+  "version": "2.0.0",
+  "description": "CRM Conversacional · RaaS (Reasoning as a Service) · Multi-tenant",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node crm-server.mjs",
+    "seed": "node seed-demo.mjs --force",
+    "index:rag": "node --expose-gc --max-old-space-size=512 ../rag/indexador.mjs",
+    "index:conversations": "node --expose-gc --max-old-space-size=512 rag-crm.mjs --index",
+    "index:mototractor": "node --expose-gc --max-old-space-size=512 knowledge/index-mototractor-docs.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "bin": {
+    "crm": "./crm-cli.mjs"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1"
+  },
+  "dependencies": {
+    "@langchain/community": "^1.1.28",
+    "@langchain/core": "^1.1.45",
+    "@langchain/langgraph": "^1.3.0",
+    "@langchain/openai": "^1.4.5",
+    "@langchain/textsplitters": "^1.0.1",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "pdfjs-dist": "^5.6.205",
+    "qrcode": "^1.5.4",
+    "sql.js": "^1.14.1",
+    "stripe": "^22.1.1"
+  }
+}

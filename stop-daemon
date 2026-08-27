@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# stop-daemon — Detiene el CRM Server que arrancó start-daemon.
+#
+# Mata únicamente el proceso del server (usando data/crm.pid), nunca el terminal
+# ni otros procesos. Reiniciar el server aquí NO afecta a la sesión del CLI
+# lanzada en otra terminal.
+#
+# Uso:
+#   ./stop-daemon
+
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+PID_FILE="$DIR/data/crm.pid"
+
+if [ ! -f "$PID_FILE" ]; then
+  echo "  ⚠️  No hay PID file (data/crm.pid). ¿El server inició con start-daemon?"
+  echo "     El server no estaba corriendo bajo daemon."
+  exit 0
+fi
+
+PID="$(cat "$PID_FILE")"
+
+if ! kill -0 "$PID" 2>/dev/null; then
+  echo "  ⚠️  El proceso $PID ya no existe. Limpiando PID file."
+  rm -f "$PID_FILE"
+  exit 0
+fi
+
+echo "  🛑 Deteniendo CRM Server (PID $PID)..."
+kill "$PID" 2>/dev/null || true
+
+# Esperar shutdown graceful (crm-server.mjs maneja SIGTERM)
+for i in $(seq 1 8); do
+  if ! kill -0 "$PID" 2>/dev/null; then
+    rm -f "$PID_FILE"
+    echo "  ✅ CRM detenido."
+    exit 0
+  fi
+  sleep 1
+done
+
+# Si no acabó a tiempo, forzar
+echo "  ⏰ No respondió al SIGTERM en 8s. Forzando SIGKILL..."
+kill -9 "$PID" 2>/dev/null || true
+rm -f "$PID_FILE"
+echo "  ✅ CRM detenido (forzado)."

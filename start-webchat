@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# start-webchat — Inicia el CRM Conversacional Multi-Tenant desacoplado
+#
+# Antes lanzaba `node crm-server.mjs` en foreground, amarrando el server a la
+# sesión de terminal (un reinicio tumbaba también el CLI). Ahora delega en
+# start-daemon, que corre el server con setsid (sesión propia): reiniciarlo no
+# afecta a procesos de otras terminales (p.ej. el CLI crm-cli.mjs).
+#
+# Uso: ./start-webchat [--seed] [--no-whatsapp] [--no-instagram]
+#   --seed           Fuerza carga de datos demo
+#   --no-whatsapp    Deshabilita WhatsApp
+#   --no-instagram   Deshabilita Instagram
+
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+exec "$DIR/start-daemon" "$@"

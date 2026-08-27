@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# start-direct — Inicia el CRM desacoplado de la terminal (delega en start-daemon)
+#
+# Antes este script lanzaba `node crm-server.mjs` en foreground con wait/trap,
+# amarrándolo a la sesión de terminal. Al reiniciar, la señal iba al grupo de la
+# terminal y tumbaba también la sesión del CLI. Ahora delega en start-daemon,
+# que corre el server con setsid (sesión propia), de modo que reiniciarlo no
+# afecta a procesos de otras terminales (p.ej. el CLI crm-cli.mjs).
+#
+# Uso:
+#   ./start-direct                  ← arranca el CRM solo
+#   ./start-direct --seed           ← fuerza resiembra de datos demo
+#   CRM_IP=192.168.1.10 ./start-direct ← con IP específica
+#
+# Después de arrancar, en Termux ejecuta:
+#   CRM_URL=http://192.168.166.218:3030 TENANT=mototractor node wa-tablet.cjs 573134309594
+
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+exec "$DIR/start-daemon" "$@"

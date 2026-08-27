@@ -1,0 +1,28 @@
+# ── Secrets y config local (JAMÁS versionar) ──
+.env
+.env.*
+!.env.example
+
+# ── Base de datos y datos vivos del runtime ──
+data/
+*.sqlite
+*.db
+crm.db
+
+# ── Dependencias y build ──
+node_modules/
+dist/
+*.tsbuildinfo
+
+# ── Runtime: sesiones de WhatsApp / tablet ──
+.wa_processed_ids.json
+whatsapp-auth/
+*.log
+crm.pid
+
+# ── Contexto del despliegue (OJO: esto se ignora del repo, la config va por env) ──
+# docker-compose.yml y crm.service referencian variables de entorno; se versionan
+# como plantilla si se desea, pero los secretos de despliegue viven en el provider.
+
+# Los archivos de arranque tipo setsid/systemd son específicos del VPS local;
+# se incluyen en el repo como referencia. Si se versionan, no llevan secrets.

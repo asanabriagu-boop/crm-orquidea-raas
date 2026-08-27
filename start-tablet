@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# start-tablet — Inicia el CRM con soporte para tableta WhatsApp
+# La tableta corre Baileys, el servidor solo recibe webhooks HTTP.
+#
+# El server se lanza desacoplado de la terminal (start-daemon / setsid), de modo
+# que reiniciarlo no tumbe la sesión del CLI lanzada en otra terminal. El túnel
+# Serveo y sus monitores siguen asociados a esta terminal.
+#
+# Conexión a la tableta (por orden de preferencia):
+#   1. DuckDNS (CRM_DDNS) — recomendado para hotspot, IP dinámica
+#   2. LAN directa (HOST_LAN_IP o gateway detectado)
+#   3. Túnel Serveo (solo con --tunnel, cuando no hay DuckDNS)
+#
+# Uso: ./start-tablet [--seed] [--tunnel]
+
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+
+PORT="${CRM_PORT:-3030}"
+SEED_FLAG=""
+TUNNEL_MODE=false
+TUNNEL_URL=""
+TUNNEL_NAME="${CRM_TUNNEL:-orquidea}"
+DUCKDNS_DOMAIN_RAW="${CRM_DDNS:-}"
+# Sanitizar: quitar protocolo si la variable ya lo trae
+DUCKDNS_DOMAIN="${DUCKDNS_DOMAIN_RAW#https://}"
+DUCKDNS_DOMAIN="${DUCKDNS_DOMAIN#http://}"
+
+for arg in "$@"; do
+  case "$arg" in
+    --seed)   SEED_FLAG="--seed" ;;
+    --tunnel) TUNNEL_MODE=true ;;
+  esac
+done
+
+# ═══════════════════════════════════════════════
+#  DETECTAR IP DEL HOST REAL
+# ═══════════════════════════════════════════════
+detect_host_ip() {
+  # 1. Prioridad: archivo montado desde el host (actualizable sin reiniciar el contenedor)
+  #    Úsalo así desde el HOST: echo "10.113.72.xxx" | sudo tee /mototractor/host-ip.txt
+  if [ -f "/mototractor/host-ip.txt" ]; then
+    local ip
+    ip=$(head -1 /mototractor/host-ip.txt | tr -d ' \n')
+    if [ -n "$ip" ] && ! echo "$ip" | grep -qE '^(127\.|172\.1[7-9]\.|172\.2[0-9]\.|172\.3[0-1]\.|10\.0\.)'; then
+      echo "$ip"
+      return
+    fi
+  fi
+
+  # 2. Variable de entorno de docker-compose.yml (IP al momento de arrancar el contenedor)
+  if [ -n "$HOST_LAN_IP" ]; then
+    echo "$HOST_LAN_IP"
+    return
+  fi
+
+  # 3. Auto-detección desde el host mediante ip (funciona en bare metal / sin Docker)
+  if command -v ip &>/dev/null; then
+    local gw_iface
+    gw_iface=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
+    if [ -n "$gw_iface" ]; then
+      local ip
+      ip=$(ip -4 addr show "$gw_iface" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+      if [ -n "$ip" ] && ! echo "$ip" | grep -qE '^127\.'; then
+        echo "$ip"
+        return
+      fi
+    fi
+    local ip
+    ip=$(ip -4 addr show | awk '
+      /^[0-9]+:/ { iface = $2; gsub(/:/,"",iface); state_line = $0 }
+      /inet / {
+        if (iface !~ /^(lo|docker|br-|veth|tun|pan|tailscale|dummy)/ && iface ~ /^(en|wl|eth)/) {
+          if ((state_line ~ /state UP/ || state_line ~ /state UNKNOWN/) && state_line !~ /NO-CARRIER/) {
+            split($2, a, "/"); print a[1]; exit
+          }
+        }
+      }
+    ' 2>/dev/null)
+    if [ -n "$ip" ]; then echo "$ip"; return; fi
+    ip=$(ip -4 addr show | awk '
+      /^[0-9]+:/ { iface = $2; gsub(/:/,"",iface); state_line = $0 }
+      /inet / {
+        if (iface != "lo" && iface !~ /^(docker|br-|veth|tun|pan|tailscale|dummy)/) {
+          if ((state_line ~ /state UP/ || state_line ~ /state UNKNOWN/) && state_line !~ /NO-CARRIER/) {
+            split($2, a, "/"); print a[1]; exit
+          }
+        }
+      }
+    ' 2>/dev/null)
+    if [ -n "$ip" ] && ! echo "$ip" | grep -qE '^100\.'; then echo "$ip"; return; fi
+  fi
+
+  # 4. Fallback: hostname -I (dentro del contenedor da la IP Docker bridge, se filtra)
+  local ip
+  ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | head -1)
+  if [ -n "$ip" ]; then echo "$ip"; return; fi
+
+  # 5. Último recurso: gateway de /proc/net/route
+  local gw
+  gw=$(awk '$2 == "00000000" {print $3}' /proc/net/route 2>/dev/null | head -1)
+  if [ -n "$gw" ]; then
+    local a b c d
+    a=$((16#${gw:6:2}))
+    b=$((16#${gw:4:2}))
+    c=$((16#${gw:2:2}))
+    d=$((16#${gw:0:2}))
+    echo "$a.$b.$c.$d"
+    return
+  fi
+  echo ""
+}
+
+LAN_IP=$(detect_host_ip)
+
+# ═══════════════════════════════════════════════
+#  BANNER
+# ═══════════════════════════════════════════════
+echo "╔═══════════════════════════════════════════════╗"
+echo "║  🏗️ CRM CONVERSACIONAL — MODO TABLETA        ║"
+echo "║  WhatsApp via tableta (HTTP hook)             ║"
+echo "╚═══════════════════════════════════════════════╝"
+echo ""
+
+echo "  🌐 LAN detectada: http://${LAN_IP}:${PORT}"
+if [ -n "$DUCKDNS_DOMAIN" ]; then
+  echo "  🦆 DuckDNS:       https://${DUCKDNS_DOMAIN}"
+fi
+echo ""
+
+# ═══════════════════════════════════════════════
+#  TÚNEL SEREO (solo con --tunnel)
+# ═══════════════════════════════════════════════
+start_tunnel_loop() {
+  (
+    local SSH_PID=""
+    while true; do
+      if [ -n "$SSH_PID" ]; then
+        kill "$SSH_PID" 2>/dev/null || true
+        sleep 3
+      fi
+      echo "  🚇 Túnel Serveo conectándose..."
+      ssh -i ~/.ssh/serveo -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
+          -R ${TUNNEL_NAME}:80:localhost:${PORT} serveo.net 2>&1 &
+      SSH_PID=$!
+      wait $SSH_PID 2>/dev/null
+      echo "  ⚠️ Túnel caído. Reintentando en 30s..."
+      sleep 30
+    done
+  ) | tee "$DIR/data/tunnel.log" &
+  TUNNEL_PID=$!
+
+  for i in $(seq 1 30); do
+    TUNNEL_URL=$(grep -oP 'https://[a-z0-9][a-z0-9-]*\.serveousercontent\.com' "$DIR/data/tunnel.log" 2>/dev/null | tail -1)
+    if [ -n "$TUNNEL_URL" ]; then
+      echo "  ✅ Túnel activo: $TUNNEL_URL"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "  ⚠️ Túnel no disponible"
+}
+
+monitor_tunnel() {
+  (
+    local last_url="$TUNNEL_URL"
+    while true; do
+      if [ -f "$DIR/data/tunnel.log" ]; then
+        local current_url
+        current_url=$(grep -oP 'https://[a-z0-9][a-z0-9-]*\.serveousercontent\.com' "$DIR/data/tunnel.log" 2>/dev/null | tail -1)
+        if [ -n "$current_url" ]; then
+          echo "$current_url" > "$DIR/data/tunnel-url.txt"
+          if [ "$current_url" != "$last_url" ]; then
+            echo "  🔄 Túnel renovado: $current_url"
+            last_url="$current_url"
+          fi
+        fi
+      fi
+      sleep 10
+    done
+  ) &
+  MONITOR_PID=$!
+}
+
+cleanup() {
+  echo ""; echo "  🛑 Deteniendo túnel..."
+  kill $TUNNEL_PID $MONITOR_PID 2>/dev/null
+  echo "  💤 El server sigue corriendo desacoplado."
+  echo "     Para detenerlo: ./stop-daemon"
+  exit 0
+}
+trap cleanup INT TERM
+
+# ═══════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════
+
+# ── MODO TÚNEL (Serveo) ──
+if [ "$TUNNEL_MODE" = true ]; then
+  start_tunnel_loop
+  monitor_tunnel
+
+  echo "  ════════════════════════════════════════════"
+  echo "   ▶ Comando para la TABLETA (Termux):"
+  echo ""
+  echo "    CRM_PUBLIC_URL=$TUNNEL_URL node wa-tablet.cjs TU_NUMERO"
+  echo "   ════════════════════════════════════════════"
+  echo ""
+
+  # El server conoce la URL pública del túnel vía BASE_URL.
+  BASE_URL="$TUNNEL_URL" NODE_OPTIONS="--max-old-space-size=2048 --expose-gc" \
+    "$DIR/start-daemon" ${SEED_FLAG:-}
+  echo "  ✅ CRM con túnel Serveo. 🚪 Ctrl+C detiene el túnel (no el server)."
+  wait; exit 0
+fi
+
+# ── MODO LAN (por defecto, sin túnel) ──
+echo "  ════════════════════════════════════════════"
+echo "   ▶ Comando para la TABLETA (Termux):"
+echo ""
+
+# Si DuckDNS está configurado, es la opción principal
+# (funciona con hotspot porque DuckDNS resuelve a la IP actual del host)
+if [ -n "$DUCKDNS_DOMAIN" ]; then
+  echo "   Opción 1 — DuckDNS (RECOMENDADO para hotspot):"
+  echo "    CRM_DDNS=https://${DUCKDNS_DOMAIN} node wa-tablet.cjs NUMERO"
+  echo ""
+  echo "   Opción 2 — LAN directa (misma red):"
+  echo "    CRM_URL=http://${LAN_IP}:${PORT} node wa-tablet.cjs NUMERO"
+else
+  echo "   LAN directa:"
+  echo "    CRM_URL=http://${LAN_IP}:${PORT} node wa-tablet.cjs NUMERO"
+fi
+echo "   ════════════════════════════════════════════"
+echo ""
+
+NODE_OPTIONS="--max-old-space-size=2048 --expose-gc" \
+  "$DIR/start-daemon" ${SEED_FLAG:-}
+echo "  ✅ CRM iniciado desacoplado (server). 🚪 Ctrl+C solo cierra esta terminal."
+echo "     Para detener el server: ./stop-daemon"
+wait

@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# start-daemon — Arranca el CRM Server desacoplado de la terminal (setsid).
+#
+# El problema que resuelve: los scripts antiguos (start-direct, start-webchat,
+# start-tablet) lanzaban `node crm-server.mjs` en foreground y hacían wait/trap,
+# amarrándolo a la sesión de terminal. Al reiniciar el server, la señal iba al
+# grupo de procesos de la terminal y tumbaba también la sesión del CLI.
+#
+# Este script lanza el server con `setsid` (nueva sesión / inmune a SIGHUP de la
+# terminal), guarda el PID en data/crm.pid y espera al healthcheck. Reiniciar el
+# server (stop-daemon && start-daemon) ya NO afecta a procesos lanzados en otras
+# terminales (como el CLI crm-cli.mjs).
+#
+# Uso:
+#   ./start-daemon                  ← arranca el CRM desacoplado
+#   ./start-daemon --seed           ← fuerza resiembra de datos demo
+#   ./start-daemon --no-whatsapp    ← sin soporte WhatsApp
+#   ./start-daemon --no-instagram   ← sin soporte Instagram
+#   CRM_IP=192.168.1.10 ./start-daemon ← IP específica para BASE_URL
+#   CRM_PORT=3030 ./start-daemon    ← puerto distinto
+
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+
+PORT="${CRM_PORT:-3030}"
+SEED_FLAG=""
+WHATSAPP_FLAG=""
+INSTAGRAM_FLAG=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --seed)        SEED_FLAG="--seed" ;;
+    --no-whatsapp) WHATSAPP_FLAG="--no-whatsapp" ;;
+    --no-instagram) INSTAGRAM_FLAG="--no-instagram" ;;
+  esac
+done
+
+# IP: usar CRM_IP si se pasa, o detectar automáticamente
+if [ -z "$CRM_IP" ]; then
+  LOCAL_IPS=$(hostname -I 2>/dev/null || ip addr show 2>/dev/null | grep -oP 'inet \K[\d.]+' | grep -v '127.0.0.1' || echo "NO_IP_DETECTED")
+  CRM_IP=$(echo "$LOCAL_IPS" | head -1)
+fi
+
+PID_FILE="$DIR/data/crm.pid"
+
+# Healthcheck helper (sin curl)
+check_health() {
+  timeout 2 bash -c "echo -e 'GET /health HTTP/1.0\r\n\r\n' > /dev/tcp/localhost/${PORT}" 2>/dev/null
+}
+
+echo "╔═══════════════════════════════════════════════╗"
+echo "║  🏗️ CRM CONVERSACIONAL — MODO DAEMON        ║"
+echo "║  Server desacoplado de la terminal (setsid)  ║"
+echo "╚═══════════════════════════════════════════════╝"
+echo ""
+echo "  🌐 IP del servidor: ${CRM_IP}"
+echo "  📁 PID file:       ${PID_FILE}"
+if check_health; then
+  echo "  📡 Estado:          🟢 YA CORRIENDO"
+  echo "     -> Para reiniciar: ./stop-daemon && ./start-daemon"
+  exit 0
+else
+  echo "  📡 Estado:          🔴 Apagado"
+fi
+echo ""
+
+# Si quedó un PID file obsoleto pero el proceso ya no existe, lo limpiamos.
+if [ -f "$PID_FILE" ] && ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+  rm -f "$PID_FILE"
+fi
+
+# La sesión del CLI (crm-cli.mjs) es un proceso aparte y NO se ve afectada:
+# lanzamos el server en una sesión propia con setsid, así no cuelga de esta
+# terminal y un reinicio aquí no manda señales al grupo del CLI.
+# Si BASE_URL ya viene del entorno (p.ej. modo túnel de start-tablet), se
+# respeta; si no, calculamos BASE_URL desde CRM_IP.
+CRM_DEFAULT_BASE="http://${CRM_IP}:${PORT}"
+setsid env \
+  BASE_URL="${BASE_URL:-$CRM_DEFAULT_BASE}" \
+  CRM_PORT="$PORT" \
+  node crm-server.mjs ${WHATSAPP_FLAG:-} ${INSTAGRAM_FLAG:-} ${SEED_FLAG:-} > "$DIR/data/crm.out.log" 2>&1 &
+
+echo $! > "$PID_FILE"
+CRM_PID=$!
+
+# Esperar a que esté vivo
+echo -n "  ⏳ Esperando servidor..."
+for i in $(seq 1 30); do
+  if check_health; then
+    echo " ¡LISTO!"
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "   ✅ CRM CORRIENDO (daemon, PID $CRM_PID)"
+    echo "═══════════════════════════════════════════════"
+    echo ""
+    echo "   📡 Servidor: http://${CRM_IP}:${PORT}"
+    echo "   💬 Chat Web: http://${CRM_IP}:${PORT}/chat"
+    echo "   📟 Webhook:  http://${CRM_IP}:${PORT}/api/whatsapp-hook"
+    echo "   📝 Logs:     data/crm.out.log"
+    echo ""
+    echo "   ▶ Detener:   ./stop-daemon"
+    echo "   ▶ Reiniciar: ./stop-daemon && ./start-daemon"
+    echo "     (la sesión en OTRAS terminales —p.ej. el CLI— NO se pierde)"
+    echo ""
+    exit 0
+  fi
+  sleep 1
+  echo -n "."
+done
+
+echo ""
+echo "  ⚠️  El servidor no respondió a tiempo. Revisa data/crm.out.log"
+echo "     PID: $CRM_PID"
+exit 1

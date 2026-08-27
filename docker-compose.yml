@@ -1,0 +1,39 @@
+# ── CRM Conversacional · docker-compose ──
+# Uso: docker compose up --build -d
+
+services:
+  crm:
+    build: .
+    container_name: crm-conversacional
+    ports:
+      - "3030:3030"
+    volumes:
+      - crm-data:/app/data
+    environment:
+      - NODE_ENV=production
+      - CRM_PORT=3030
+      - CRM_HOST=0.0.0.0
+      - BASE_URL=https://${DOMAIN:-localhost:3030}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.deepseek.com}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - STRIPE_PRICE_STARTER=${STRIPE_PRICE_STARTER:-}
+      - STRIPE_PRICE_PRO=${STRIPE_PRICE_PRO:-}
+      - STRIPE_PRICE_ENTERPRISE=${STRIPE_PRICE_ENTERPRISE:-}
+      # Seguridad: ADMIN_JWT_SECRET y ADMIN_PASSWORD son OBLIGATORIOS.
+      # Sin ellos `docker compose` falla en vez de arrancar con credenciales débiles.
+      - ADMIN_JWT_SECRET=${ADMIN_JWT_SECRET:?ADMIN_JWT_SECRET es obligatorio (genera uno fuerte para producción)}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD es obligatorio (usa una contraseña fuerte para producción)}
+      # CORS restringido: por defecto solo al dominio público del CRM, no "*".
+      - CORS_ORIGIN=${CORS_ORIGIN:-https://${DOMAIN:-localhost:3030}}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3030/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  crm-data:

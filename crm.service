@@ -1,0 +1,50 @@
+# crm.service — Plantilla systemd para el CRM Conversacional en el VPS
+#
+# En producción el CRM corre bajo systemd (el PID 1 real del VM). systemd es el
+# supervisor: reinicia el proceso automáticamente ante caídas (Restart=always) y
+# permite desplegar actualizaciones con `systemctl restart crm` SIN afectar a
+# otros procesos ajenos al servicio (p.ej. cualquier sesión del CLI crm-cli.mjs,
+# que corre como proceso del usuario y no cuelga de este servicio).
+#
+# ▶ Instalar en el VPS:
+#   sudo cp crm.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now crm
+#
+# ▶ Estado:
+#   systemctl status crm
+#   journalctl -u crm -f
+#
+# ▶ Actualizar el CRM (desde el directorio del despliegue):
+#   git pull
+#   sudo npm install (si cambió package-lock.json)
+#   sudo systemctl restart crm
+#
+# ▶ Detener / arrancar:
+#   sudo systemctl stop crm     sudo systemctl start crm
+#
+# ▶ .env: lee las credenciales desde /app/.env (ruta del despliegue).
+#   USD dándole más memoria si hace falta:
+
+[Unit]
+Description=CRM Conversacional (Orquidea Computing)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Ajusta la ruta al directorio real del despliegue en el VPS.
+EnvironmentFile=/app/.env
+WorkingDirectory=/app
+# Ajusta la ruta a node y al script si el despliegue no está en /app.
+ExecStart=/usr/bin/env node /app/crm-server.mjs
+Restart=always
+RestartSec=5
+# Memoria: ajusta según el plan del VPS (opcional).
+Environment=NODE_OPTIONS=--max-old-space-size=2048
+# Usuario sin privilegios si lo creaste; si no, quita estas dos líneas.
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
